@@ -94,7 +94,14 @@ export function buildUrl(baseUrl: string, path: string, query: Query = {}): stri
     }
   }
   const qs = params.toString();
-  return `${baseUrl.replace(/\/+$/, '')}${path}${qs ? `?${qs}` : ''}`;
+  return `${trimTrailingSlashes(baseUrl)}${path}${qs ? `?${qs}` : ''}`;
+}
+
+/** Linear-time trailing-slash trim; avoids a `/\/+$/` regex, which is quadratic on many inner '/'. */
+export function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end--;
+  return value.slice(0, end);
 }
 
 function sanitiseDigits(value: string | null): string | undefined {

@@ -5,6 +5,7 @@ import {
   createSallaClient,
   describeSallaError,
   SALLA_BASE_URL,
+  trimTrailingSlashes,
   type SallaResult,
 } from '../src/salla-client.js';
 import { fakeFetch, loadFixture, TEST_TOKEN } from './helpers.js';
@@ -184,5 +185,23 @@ describe('base URL handling', () => {
     expect(buildUrl('https://h/x', '/orders', { a: undefined, keyword: 'قهوة & tea', light: true })).toBe(
       'https://h/x/orders?keyword=%D9%82%D9%87%D9%88%D8%A9+%26+tea&light=true',
     );
+  });
+
+  it('buildUrl strips any number of trailing slashes from the base URL', () => {
+    expect(buildUrl('https://h/x///', '/orders')).toBe('https://h/x/orders');
+  });
+
+  it('trimTrailingSlashes handles edge cases', () => {
+    expect(trimTrailingSlashes('')).toBe('');
+    expect(trimTrailingSlashes('///')).toBe('');
+    expect(trimTrailingSlashes('a/b')).toBe('a/b');
+    expect(trimTrailingSlashes('a/b//')).toBe('a/b');
+  });
+
+  it('trimTrailingSlashes stays linear on many inner slashes (CodeQL js/polynomial-redos)', () => {
+    const hostile = `${'/'.repeat(200_000)}x`;
+    const started = performance.now();
+    expect(trimTrailingSlashes(hostile)).toBe(hostile);
+    expect(performance.now() - started).toBeLessThan(250);
   });
 });
