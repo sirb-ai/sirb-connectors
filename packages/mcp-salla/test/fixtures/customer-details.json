@@ -1,0 +1,14 @@
+{
+  "status": 200,
+  "success": true,
+  "data": {
+    "id": 700001,
+    "first_name": "Test",
+    "last_name": "Customer",
+    "mobile": 500000000,
+    "mobile_code": "+966",
+    "email": "customer@example.com",
+    "city": "Riyadh",
+    "country": "Saudi Arabia"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "status": 200,
+  "success": true,
+  "data": {
+    "id": 100001,
+    "reference_id": 50001,
+    "status": { "id": 566146469, "name": "بإنتظار المراجعة", "slug": "under_review" },
+    "amounts": { "total": { "amount": 245.5, "currency": "SAR" } },
+    "customer": { "id": 700001, "first_name": "Test", "last_name": "Customer", "email": "customer@example.com" },
+    "items": [{ "id": 1, "name": "Example Coffee Beans 250g", "quantity": 2 }]
+  }
+}
