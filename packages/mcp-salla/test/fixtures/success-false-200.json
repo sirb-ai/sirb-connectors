@@ -1,0 +1,5 @@
+{
+  "status": 200,
+  "success": false,
+  "error": { "code": "error", "message": "Upstream detail that must not be echoed" }
+}

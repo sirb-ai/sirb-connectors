@@ -1,0 +1,43 @@
+{
+  "status": 200,
+  "success": true,
+  "data": {
+    "id": 100003,
+    "reference_id": 50003,
+    "date": { "date": "2026-09-03 12:00:00.000000", "timezone_type": 3, "timezone": "Asia/Riyadh" },
+    "status": { "id": 566146469, "name": "بإنتظار المراجعة", "slug": "under_review", "customized": { "id": 1, "name": "x" } },
+    "payment_method": "bank",
+    "currency": "SAR",
+    "amounts": {
+      "sub_total": { "amount": 200, "currency": "SAR" },
+      "shipping_cost": { "amount": 25, "currency": "SAR" },
+      "tax": { "percent": "15.00", "amount": { "amount": 20.5, "currency": "SAR" } },
+      "total": { "amount": 245.5, "currency": "SAR" }
+    },
+    "bank": {
+      "id": 1,
+      "bank_name": "Example Bank",
+      "account_name": "Test Customer",
+      "account_number": "1234567890",
+      "iban_number": "SA0000000000000000000000"
+    },
+    "source_details": { "type": "web", "value": "https://store.example.com", "ip": "198.51.100.7", "user_agent": "Mozilla/5.0 (Test)" },
+    "receipt_image": "https://cdn.example.com/receipts/100003.png",
+    "notes": "Leave at the door",
+    "customer": {
+      "id": 700001,
+      "first_name": "Test",
+      "last_name": "Customer",
+      "mobile": 500000000,
+      "mobile_code": "+966",
+      "email": "customer@example.com",
+      "gender": "male",
+      "birthday": "1990-01-01",
+      "location": { "street": "1 Example Street", "lat": "24.7", "lng": "46.6" },
+      "avatar": "https://cdn.example.com/avatars/700001.png"
+    },
+    "items": [
+      { "id": 1, "name": "Example Coffee Beans 250g", "sku": "EX-COF-250", "quantity": 2, "notes": "gift wrap", "amounts": { "total": { "amount": 90, "currency": "SAR" } } }
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "status": 200,
+  "success": true,
+  "data": [
+    {
+      "id": 100001,
+      "reference_id": 50001,
+      "date": { "date": "2026-09-01 10:15:00.000000", "timezone_type": 3, "timezone": "Asia/Riyadh" },
+      "status": { "id": 566146469, "name": "بإنتظار المراجعة", "slug": "under_review" },
+      "payment_method": "cod",
+      "total": { "amount": 245.5, "currency": "SAR" },
+      "items": [{ "name": "Example Coffee Beans 250g" }]
+    },
+    {
+      "id": 100002,
+      "reference_id": 50002,
+      "date": { "date": "2026-09-02 08:00:00.000000", "timezone_type": 3, "timezone": "Asia/Riyadh" },
+      "status": { "id": 1473353380, "name": "تم التنفيذ", "slug": "completed" },
+      "payment_method": "credit_card",
+      "total": { "amount": 99, "currency": "SAR" },
+      "items": [{ "name": "Example Mug" }]
+    }
+  ],
+  "pagination": {
+    "count": 2,
+    "total": 42,
+    "perPage": 2,
+    "currentPage": 1,
+    "totalPages": 21,
+    "links": { "next": "https://api.salla.dev/admin/v2/orders?page=2" }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "status": 200,
+  "success": true,
+  "data": {
+    "id": 700001,
+    "first_name": "Test",
+    "last_name": "Customer",
+    "mobile": 500000000,
+    "mobile_code": "+966",
+    "email": "customer@example.com",
+    "gender": "male",
+    "birthday": "1990-01-01",
+    "location": "1 Example Street, Riyadh",
+    "city": "Riyadh",
+    "country": "Saudi Arabia",
+    "avatar": "https://cdn.example.com/avatars/700001.png"
+  }
+}

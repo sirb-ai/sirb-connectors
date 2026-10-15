@@ -1,0 +1,5 @@
+{
+  "status": 429,
+  "success": false,
+  "error": { "code": "too_many_requests", "message": "Too Many Requests" }
+}
