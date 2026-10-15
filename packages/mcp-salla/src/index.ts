@@ -21,6 +21,7 @@ export {
   type ToolName,
   type ToolRisk,
   type DataClass,
+  type SallaToolOptions,
 } from './tools.js';
 export { createSallaServer } from './server.js';
 export {
@@ -40,3 +41,16 @@ export { parseCliArgs, type CliCommand } from './args.js';
 export { redact } from './redact.js';
 export { isValidBearerToken, MAX_TOKEN_LENGTH } from './token.js';
 export { SERVER_NAME, SERVER_VERSION } from './version.js';
+export {
+  project,
+  projectData,
+  projectOrders,
+  projectCustomers,
+  scrub,
+  maskEmail,
+  maskPhone,
+  isAlwaysDropped,
+  ALWAYS_DROP,
+  type FieldSpec,
+  type ProjectionOptions,
+} from './project.js';

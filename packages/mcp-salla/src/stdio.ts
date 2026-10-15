@@ -2,6 +2,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createSallaClient } from './salla-client.js';
 import { createSallaServer } from './server.js';
+import type { SallaToolOptions } from './tools.js';
 import { isValidBearerToken, MAX_TOKEN_LENGTH } from './token.js';
 
 export const TOKEN_ENV_VAR = 'SALLA_ACCESS_TOKEN';
@@ -29,8 +30,11 @@ export function readStdioToken(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /** Runs the server over stdio. Only MCP protocol messages are written to stdout. */
-export async function runStdio(env: NodeJS.ProcessEnv = process.env): Promise<McpServer> {
-  const server = createSallaServer(createSallaClient({ accessToken: readStdioToken(env) }));
+export async function runStdio(
+  env: NodeJS.ProcessEnv = process.env,
+  options: SallaToolOptions = {},
+): Promise<McpServer> {
+  const server = createSallaServer(createSallaClient({ accessToken: readStdioToken(env) }), options);
   await server.connect(new StdioServerTransport());
   return server;
 }

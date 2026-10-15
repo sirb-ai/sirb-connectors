@@ -3,8 +3,8 @@ import { parseCliArgs } from '../src/args.js';
 
 describe('parseCliArgs', () => {
   it('defaults to stdio', () => {
-    expect(parseCliArgs([])).toEqual({ mode: 'stdio' });
-    expect(parseCliArgs(['--stdio'])).toEqual({ mode: 'stdio' });
+    expect(parseCliArgs([])).toEqual({ mode: 'stdio', revealContactDetails: false });
+    expect(parseCliArgs(['--stdio'])).toEqual({ mode: 'stdio', revealContactDetails: false });
   });
 
   it('parses http with loopback defaults', () => {
@@ -14,6 +14,7 @@ describe('parseCliArgs', () => {
       port: 3000,
       allowRemote: false,
       allowedHosts: [],
+      revealContactDetails: false,
     });
     expect(parseCliArgs(['--http', '--port', '8080', '--host', '::1'])).toEqual({
       mode: 'http',
@@ -21,7 +22,13 @@ describe('parseCliArgs', () => {
       port: 8080,
       allowRemote: false,
       allowedHosts: [],
+      revealContactDetails: false,
     });
+  });
+
+  it('parses --reveal-contact-details in both modes (default: masked)', () => {
+    expect(parseCliArgs(['--reveal-contact-details'])).toEqual({ mode: 'stdio', revealContactDetails: true });
+    expect(parseCliArgs(['--http', '--reveal-contact-details'])).toMatchObject({ mode: 'http', revealContactDetails: true });
   });
 
   it('requires --allow-remote and --allowed-host for a non-loopback bind', () => {
@@ -29,7 +36,14 @@ describe('parseCliArgs', () => {
     expect(() => parseCliArgs(['--http', '--host', '0.0.0.0', '--allow-remote'])).toThrow(/--allowed-host/);
     expect(
       parseCliArgs(['--http', '--host', '0.0.0.0', '--allow-remote', '--allowed-host', 'MCP.internal', '--allowed-host', 'b']),
-    ).toEqual({ mode: 'http', host: '0.0.0.0', port: 3000, allowRemote: true, allowedHosts: ['mcp.internal', 'b'] });
+    ).toEqual({
+      mode: 'http',
+      host: '0.0.0.0',
+      port: 3000,
+      allowRemote: true,
+      allowedHosts: ['mcp.internal', 'b'],
+      revealContactDetails: false,
+    });
   });
 
   it('parses help', () => {

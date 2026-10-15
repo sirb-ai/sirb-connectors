@@ -256,7 +256,7 @@ describe('untrusted text is returned as data', () => {
     type Order = { customer: { first_name: string }; items: Array<{ name: string }>; notes?: string };
     const body = loadFixture('orders-injection') as { data: Order[] };
     const { call, calls } = await setup({ body });
-    const result = await call('salla_list_orders', { include_contact: true });
+    const result = await call('salla_list_orders');
 
     expect(result.isError).toBeFalsy();
     expect(result.content).toHaveLength(1);

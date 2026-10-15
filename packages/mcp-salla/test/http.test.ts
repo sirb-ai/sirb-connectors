@@ -218,3 +218,32 @@ describe('HTTP hardening', () => {
     }
   });
 });
+
+describe('contact details over HTTP', () => {
+  const callGetOrder = async (reveal: boolean | undefined) => {
+    const srv = await startHttpServer({ port: 0, createClient, log: () => undefined, revealContactDetails: reveal });
+    try {
+      const res = await fetch(serverUrl(srv), {
+        method: 'POST',
+        headers: { ...MCP_HEADERS, Authorization: `Bearer ${TEST_TOKEN}` },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'salla_get_order', arguments: { order_id: 100001 } },
+        }),
+      });
+      expect(res.status).toBe(200);
+      return JSON.stringify(await res.json());
+    } finally {
+      await new Promise((resolve) => srv.close(resolve));
+    }
+  };
+
+  it('masks email by default and reveals it only when the operator sets revealContactDetails', async () => {
+    const masked = await callGetOrder(undefined);
+    expect(masked).toContain('c***@example.com');
+    expect(masked).not.toContain('customer@example.com');
+    expect(await callGetOrder(true)).toContain('customer@example.com');
+  });
+});

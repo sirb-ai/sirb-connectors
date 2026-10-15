@@ -8,14 +8,19 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   capPayload,
+  isAlwaysDropped,
+  maskEmail,
+  maskPhone,
   MAX_RESULT_BYTES,
   project,
   projectCustomers,
   projectOrders,
+  scrub,
   stripControlChars,
 } from '../src/project.js';
 import { createSallaClient } from '../src/salla-client.js';
 import { createSallaServer } from '../src/server.js';
+import { inputSchemas, TOOLS, type SallaToolOptions } from '../src/tools.js';
 import { fakeFetch, loadFixture, TEST_TOKEN, type FakeResponse } from './helpers.js';
 
 let open: Array<{ close(): Promise<void> }> = [];
@@ -24,16 +29,16 @@ afterEach(async () => {
   open = [];
 });
 
-async function setup(respond: FakeResponse | ((url: URL) => FakeResponse)) {
+async function setup(respond: FakeResponse | ((url: URL) => FakeResponse), options: SallaToolOptions = {}) {
   const fake = fakeFetch(respond);
-  const server = createSallaServer(createSallaClient({ accessToken: TEST_TOKEN, fetch: fake.fetch }));
+  const server = createSallaServer(createSallaClient({ accessToken: TEST_TOKEN, fetch: fake.fetch }), options);
   const client = new Client({ name: 'project-test', version: '0.0.0' });
   const [ct, st] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(st), client.connect(ct)]);
   open.push(client, server);
   const call = async (name: string, args: Record<string, unknown> = {}) =>
     (await client.callTool({ name, arguments: args })) as CallToolResult;
-  return { call, calls: fake.calls };
+  return { client, call, calls: fake.calls };
 }
 
 /** Values that must never reach the model, whatever the arguments. */
@@ -98,10 +103,17 @@ describe('order and customer projections', () => {
   const order = (loadFixture('order-details-sensitive') as { data: unknown }).data;
   const customer = (loadFixture('customer-details-sensitive') as { data: unknown }).data;
 
-  it('orders: drop bank, IP, user agent, birthday, gender, location, receipt and notes; no contact by default', () => {
+  it('orders: drop bank, IP, user agent, birthday, gender, location, receipt and notes; contact masked by default', () => {
     const shaped = projectOrders(order) as Record<string, unknown>;
     expectNoSensitive(shaped);
-    expect(shaped.customer).toEqual({ id: 700001 });
+    expect(shaped.customer).toEqual({
+      id: 700001,
+      first_name: 'Test',
+      last_name: 'Customer',
+      email: 'c***@example.com',
+      mobile: '***00',
+      mobile_code: '+966',
+    });
     expect(shaped).toMatchObject({
       id: 100003,
       reference_id: 50003,
@@ -112,8 +124,8 @@ describe('order and customer projections', () => {
     });
   });
 
-  it('orders: include_contact adds name, email and mobile only', () => {
-    const shaped = projectOrders(order, true) as { customer: unknown };
+  it('orders: the operator setting revealContactDetails unmasks email and mobile only', () => {
+    const shaped = projectOrders(order, { revealContactDetails: true }) as { customer: unknown };
     expectNoSensitive(shaped);
     expect(shaped.customer).toEqual({
       id: 700001,
@@ -125,34 +137,120 @@ describe('order and customer projections', () => {
     });
   });
 
-  it('customers: id, city and country by default; contact fields only on request', () => {
-    expect(projectCustomers(customer)).toEqual({ id: 700001, city: 'Riyadh', country: 'Saudi Arabia' });
-    const withContact = projectCustomers(customer, true);
-    expectNoSensitive(withContact);
-    expect(withContact).toMatchObject({ email: 'customer@example.com', mobile: 500000000 });
+  const maskedCustomer = {
+    id: 700001,
+    city: 'Riyadh',
+    country: 'Saudi Arabia',
+    first_name: 'Test',
+    last_name: 'Customer',
+    email: 'c***@example.com',
+    mobile: '***00',
+    mobile_code: '+966',
+  };
+
+  it('customers: allowlisted fields with email and mobile masked by default; revealed only by the operator setting', () => {
+    expect(projectCustomers(customer)).toEqual(maskedCustomer);
+    const revealed = projectCustomers(customer, { revealContactDetails: true });
+    expectNoSensitive(revealed);
+    expect(revealed).toMatchObject({ email: 'customer@example.com', mobile: 500000000 });
   });
 
   it('projects each element of a list', () => {
-    expect(projectCustomers([customer, customer])).toEqual([
-      { id: 700001, city: 'Riyadh', country: 'Saudi Arabia' },
-      { id: 700001, city: 'Riyadh', country: 'Saudi Arabia' },
-    ]);
+    expect(projectCustomers([customer, customer])).toEqual([maskedCustomer, maskedCustomer]);
+  });
+
+  it('contact fields that are not strings or numbers are dropped, not leaked', () => {
+    expect(projectCustomers({ id: 1, email: { nested: 'x@y.z' }, mobile: ['500000123'] })).toEqual({ id: 1 });
+  });
+});
+
+describe('always-dropped keys (IBAN, bank details, buyer IP, user agent)', () => {
+  it.each(['iban', 'IBAN', 'bank', 'bank_account', 'bank_transfer_fee', 'account_number', 'accountNumber', 'swift_code', 'ip', 'client_ip', 'ip_address', 'ipAddress', 'user_agent', 'userAgent'])(
+    'drops key %s',
+    (key) => {
+      expect(isAlwaysDropped(key)).toBe(true);
+      expect(scrub({ [key]: 'x', keep: 1 })).toEqual({ keep: 1 });
+    },
+  );
+
+  it.each(['zip', 'shipping', 'description', 'ship', 'tip', 'id', 'currency'])('keeps ordinary key %s', (key) => {
+    expect(isAlwaysDropped(key)).toBe(false);
+  });
+
+  it('removes them at any depth, including inside allowlisted pass-through fields', () => {
+    const order = {
+      id: 1,
+      amounts: {
+        discounts: [{ title: 'Promo', amount: 5, bank_offer: { iban: 'SA9999999999999999999999' } }],
+        total: { amount: 10, currency: 'SAR' },
+      },
+      customer: { id: 2, ip: '203.0.113.9', userAgent: 'UA/1.0', email: 'a@b.co' },
+    };
+    for (const options of [{}, { revealContactDetails: true }]) {
+      const json = JSON.stringify(projectOrders(order, options));
+      expect(json).not.toMatch(/SA9999|203\.0\.113\.9|UA\/1\.0|bank_offer|iban|userAgent/);
+      expect(json).toContain('Promo');
+    }
+  });
+
+  it('scrub leaves scalars and arrays of scalars untouched', () => {
+    expect(scrub([1, 'a', null, { ip_address: 'x', ok: [{ iban: 'y', z: 1 }] }])).toEqual([1, 'a', null, { ok: [{ z: 1 }] }]);
+  });
+});
+
+describe('masking', () => {
+  it.each([
+    ['customer@example.com', 'c***@example.com'],
+    ['a@b', 'a***@b'],
+    ['@example.com', '***'],
+    ['no-at-sign', '***'],
+    ['x@y@z.example', 'x***@z.example'],
+  ])('maskEmail(%s) = %s', (input, expected) => {
+    expect(maskEmail(input)).toBe(expected);
+  });
+
+  it.each([
+    [500000123, '***23'],
+    ['+966 50 000 0123', '***23'],
+    ['12', '***'],
+    ['', '***'],
+  ] as const)('maskPhone(%s) = %s', (input, expected) => {
+    expect(maskPhone(input)).toBe(expected);
   });
 });
 
 describe('PII never reaches the model through the tools', () => {
   it.each([
-    ['salla_get_order', { order_id: 100003 }, 'order-details-sensitive'],
-    ['salla_get_order', { order_id: 100003, include_contact: true }, 'order-details-sensitive'],
-    ['salla_get_customer', { customer_id: 700001 }, 'customer-details-sensitive'],
-    ['salla_get_customer', { customer_id: 700001, include_contact: true }, 'customer-details-sensitive'],
-  ] as const)('%s %j', async (name, args, fixture) => {
-    const { call } = await setup({ body: loadFixture(fixture) });
+    ['salla_get_order', { order_id: 100003 }, 'order-details-sensitive', false],
+    ['salla_get_order', { order_id: 100003 }, 'order-details-sensitive', true],
+    ['salla_get_customer', { customer_id: 700001 }, 'customer-details-sensitive', false],
+    ['salla_get_customer', { customer_id: 700001 }, 'customer-details-sensitive', true],
+  ] as const)('%s %j revealContactDetails=%s', async (name, args, fixture, reveal) => {
+    const { call } = await setup({ body: loadFixture(fixture) }, { revealContactDetails: reveal });
     const result = await call(name, args);
     expect(result.isError).toBeFalsy();
     expectNoSensitive(result);
     const json = JSON.stringify(result.structuredContent);
-    expect(json.includes('customer@example.com')).toBe('include_contact' in args);
+    expect(json.includes('customer@example.com')).toBe(reveal);
+    expect(json.includes('c***@example.com')).toBe(!reveal);
+  });
+
+  it('no tool argument can unmask contact details; an unknown include_contact is ignored', async () => {
+    for (const schema of Object.values(inputSchemas)) {
+      expect(Object.keys(schema).some((k) => /contact|reveal|unmask|pii/i.test(k))).toBe(false);
+    }
+    const { call } = await setup({ body: loadFixture('customer-details-sensitive') });
+    const result = await call('salla_get_customer', { customer_id: 700001, include_contact: true });
+    expect(JSON.stringify(result)).not.toContain('customer@example.com');
+  });
+
+  it('pii tool descriptions say what is never returned and that contact details are masked', async () => {
+    const { client } = await setup({ body: {} });
+    const { tools } = await client.listTools();
+    for (const t of tools) {
+      const pii = TOOLS[t.name as keyof typeof TOOLS].dataClass === 'pii';
+      expect(/IBAN.*never returned.*masked/.test(t.description ?? ''), t.name).toBe(pii);
+    }
   });
 
   it('list tools apply the same projection to every record', async () => {
@@ -175,7 +273,7 @@ describe('stripControlChars()', () => {
 
   it('is applied to tool output', async () => {
     const { call } = await setup({ body: loadFixture('orders-injection') });
-    const result = await call('salla_list_orders', { include_contact: true });
+    const result = await call('salla_list_orders');
     expect(JSON.stringify(result)).not.toMatch(/\\u0000|‮|‬/);
   });
 });

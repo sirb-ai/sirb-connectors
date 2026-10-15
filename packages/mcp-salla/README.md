@@ -37,12 +37,12 @@ Object.values(TOOLS).every((t) => t.risk === 'read' && t.method === 'GET'); // t
 
 | Tool | Arguments |
 | --- | --- |
-| `salla_list_orders` | `page`, `per_page`, `keyword`, `status`, `from_date`, `to_date` (`YYYY-MM-DD`), `include_contact` |
-| `salla_get_order` | `order_id`, `light` (sends `format=light`), `include_contact` |
+| `salla_list_orders` | `page`, `per_page`, `keyword`, `status`, `from_date`, `to_date` (`YYYY-MM-DD`) |
+| `salla_get_order` | `order_id`, `light` (sends `format=light`) |
 | `salla_list_products` | `page`, `per_page`, `keyword`, `status`, `category`, `light` (default `true`; `false` for full objects) |
 | `salla_get_product` | `product_id` |
-| `salla_list_customers` | `page`, `per_page`, `keyword` (matches mobile, email or name), `date_from`, `date_to` (`YYYY-MM-DD`), `include_contact` |
-| `salla_get_customer` | `customer_id`, `include_contact` |
+| `salla_list_customers` | `page`, `per_page`, `keyword` (matches mobile, email or name), `date_from`, `date_to` (`YYYY-MM-DD`) |
+| `salla_get_customer` | `customer_id` |
 
 IDs are positive integers. `page` is an integer ≥ 1, and `per_page` is an integer from 1 to 30.
 Dates must be real calendar dates in `YYYY-MM-DD` form, and a range's start may not be after its end.
@@ -63,13 +63,19 @@ What the model sees is shaped before it leaves the server:
 
 - **PII projection.** Orders and customers are cut to an allowlist of fields (`src/project.ts`).
   - Orders: `id`, `reference_id`, `date`, `status` (`name`, `slug`), `payment_method`, `currency`,
-    `total`, `amounts`, `items` (`id`, `name`, `sku`, `quantity`, `amounts.total`) and `customer.id`.
-  - Customers: `id`, `city`, `country`.
-  - With `include_contact: true`, the customer's `first_name`, `last_name`, `email`, `mobile` and
-    `mobile_code` are added. Ask for them only when the task needs them.
+    `total`, `amounts`, `items` (`id`, `name`, `sku`, `quantity`, `amounts.total`) and `customer`
+    (`id` plus the contact fields below).
+  - Customers: `id`, `city`, `country` plus the contact fields below.
+  - Contact fields: `first_name`, `last_name`, `email`, `mobile`, `mobile_code`. **Email and mobile
+    are masked by default**: `customer@example.com` becomes `c***@example.com` and `500000123`
+    becomes `***23`. Only the operator can return them unmasked, with `--reveal-contact-details`
+    (or `revealContactDetails: true` in code). No tool argument can unmask them.
   - Never returned: bank details (account number, IBAN), `source_details` (buyer IP, user agent),
     `birthday`, `gender`, street-level `location`, `receipt_image`, avatars and free-text order
     `notes` or gift messages.
+  - Always dropped at any depth: keys matching IBAN, bank, SWIFT, account number, IP / IP address
+    or user agent. This applies even inside allowlisted pass-through fields such as
+    `amounts.discounts`, and even when contact details are revealed.
 - **Control characters.** C0 control characters (except tab, newline and carriage return) and
   Unicode bidi overrides are stripped from every string.
 - **Size cap.** The serialized result is limited to 64 KiB. A list that is bigger is cut to the

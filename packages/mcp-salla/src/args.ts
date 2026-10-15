@@ -2,18 +2,19 @@ import { parseArgs } from 'node:util';
 import { DEFAULT_HOST, DEFAULT_PORT, isLoopbackHost } from './http.js';
 
 export type CliCommand =
-  | { readonly mode: 'stdio' }
+  | { readonly mode: 'stdio'; readonly revealContactDetails: boolean }
   | {
       readonly mode: 'http';
       readonly host: string;
       readonly port: number;
       readonly allowRemote: boolean;
       readonly allowedHosts: readonly string[];
+      readonly revealContactDetails: boolean;
     }
   | { readonly mode: 'help' };
 
 export const USAGE = `Usage: sirb-mcp-salla [--stdio] | --http [--host 127.0.0.1] [--port 3000]
-                      [--allow-remote --allowed-host <name>...]
+                      [--allow-remote --allowed-host <name>...] [--reveal-contact-details]
 
   --stdio                Run over stdio (default). Token from SALLA_ACCESS_TOKEN set by the MCP client.
   --http                 Run Streamable HTTP on /mcp. Token from each request's Authorization: Bearer header.
@@ -21,6 +22,9 @@ export const USAGE = `Usage: sirb-mcp-salla [--stdio] | --http [--host 127.0.0.1
   --port <port>          HTTP port (default ${DEFAULT_PORT}).
   --allow-remote         Required to bind a non-loopback address. Only behind TLS (mesh mTLS or a proxy).
   --allowed-host <name>  Accepted Host/Origin hostname. Repeatable; required with --allow-remote.
+  --reveal-contact-details
+                         Return customer email/mobile unmasked (default: masked). IBAN, bank details,
+                         buyer IP and user agent are never returned.
   -h, --help             Show this help.
 `;
 
@@ -39,12 +43,15 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
       port: { type: 'string' },
       'allow-remote': { type: 'boolean' },
       'allowed-host': { type: 'string', multiple: true },
+      'reveal-contact-details': { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
   });
 
   if (values.help) return { mode: 'help' };
   if (values.stdio && values.http) throw new Error('Choose either --stdio or --http, not both.');
+
+  const revealContactDetails = values['reveal-contact-details'] === true;
 
   if (!values.http) {
     if (
@@ -55,7 +62,7 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
     ) {
       throw new Error('--host, --port, --allow-remote and --allowed-host are only valid with --http.');
     }
-    return { mode: 'stdio' };
+    return { mode: 'stdio', revealContactDetails };
   }
 
   const host = values.host ?? DEFAULT_HOST;
@@ -80,5 +87,5 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
     }
     port = Number(values.port);
   }
-  return { mode: 'http', host, port, allowRemote, allowedHosts };
+  return { mode: 'http', host, port, allowRemote, allowedHosts, revealContactDetails };
 }

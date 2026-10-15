@@ -8,6 +8,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { redact } from './redact.js';
 import { createSallaClient, type SallaClient } from './salla-client.js';
 import { createSallaServer } from './server.js';
+import type { SallaToolOptions } from './tools.js';
 import { isValidBearerToken, MAX_TOKEN_LENGTH } from './token.js';
 
 export const MCP_PATH = '/mcp';
@@ -15,7 +16,7 @@ export const MAX_BODY_BYTES = 1024 * 1024;
 // RFC 7235: the auth scheme is case-insensitive.
 const BEARER_PREFIX = /^Bearer (\S+)$/i;
 
-export interface HttpHandlerOptions {
+export interface HttpHandlerOptions extends SallaToolOptions {
   /** Builds the per-request Salla client. Tests inject a fake; production uses the real client. */
   readonly createClient?: (accessToken: string) => SallaClient;
   /**
@@ -180,7 +181,9 @@ export function createHttpHandler(options: HttpHandlerOptions = {}): HttpHandler
     }
 
     try {
-      const server = createSallaServer(createClient(token));
+      const server = createSallaServer(createClient(token), {
+        revealContactDetails: options.revealContactDetails,
+      });
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,

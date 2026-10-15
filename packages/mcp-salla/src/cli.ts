@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   }
 
   if (command.mode === 'stdio') {
-    await runStdio();
+    await runStdio(process.env, { revealContactDetails: command.revealContactDetails });
     return;
   }
 
@@ -42,6 +42,7 @@ async function main(): Promise<void> {
     host: command.host,
     port: command.port,
     allowRemote: command.allowRemote,
+    revealContactDetails: command.revealContactDetails,
     ...(command.allowedHosts.length ? { allowedHostnames: command.allowedHosts } : {}),
   });
   process.stderr.write(`sirb-mcp-salla: listening on ${serverUrl(server)}\n`);
