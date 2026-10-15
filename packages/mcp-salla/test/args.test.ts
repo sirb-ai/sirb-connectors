@@ -8,12 +8,28 @@ describe('parseCliArgs', () => {
   });
 
   it('parses http with loopback defaults', () => {
-    expect(parseCliArgs(['--http'])).toEqual({ mode: 'http', host: '127.0.0.1', port: 3000 });
+    expect(parseCliArgs(['--http'])).toEqual({
+      mode: 'http',
+      host: '127.0.0.1',
+      port: 3000,
+      allowRemote: false,
+      allowedHosts: [],
+    });
     expect(parseCliArgs(['--http', '--port', '8080', '--host', '::1'])).toEqual({
       mode: 'http',
       host: '::1',
       port: 8080,
+      allowRemote: false,
+      allowedHosts: [],
     });
+  });
+
+  it('requires --allow-remote and --allowed-host for a non-loopback bind', () => {
+    expect(() => parseCliArgs(['--http', '--host', '0.0.0.0'])).toThrow(/--allow-remote/);
+    expect(() => parseCliArgs(['--http', '--host', '0.0.0.0', '--allow-remote'])).toThrow(/--allowed-host/);
+    expect(
+      parseCliArgs(['--http', '--host', '0.0.0.0', '--allow-remote', '--allowed-host', 'MCP.internal', '--allowed-host', 'b']),
+    ).toEqual({ mode: 'http', host: '0.0.0.0', port: 3000, allowRemote: true, allowedHosts: ['mcp.internal', 'b'] });
   });
 
   it('parses help', () => {
@@ -23,6 +39,8 @@ describe('parseCliArgs', () => {
   it.each([
     [['--http', '--stdio'], /either/],
     [['--port', '1'], /only valid with --http/],
+    [['--allow-remote'], /only valid with --http/],
+    [['--http', '--allowed-host', 'a b'], /Invalid --allowed-host/],
     [['--http', '--port', '70000'], /Invalid --port/],
     [['--http', '--port', 'abc'], /Invalid --port/],
     [['--http', '--host', 'a b'], /Invalid --host/],

@@ -12,14 +12,20 @@ import { isValidBearerToken, MAX_TOKEN_LENGTH } from './token.js';
 
 export const MCP_PATH = '/mcp';
 export const MAX_BODY_BYTES = 1024 * 1024;
-const BEARER_PREFIX = /^Bearer (\S+)$/;
+// RFC 7235: the auth scheme is case-insensitive.
+const BEARER_PREFIX = /^Bearer (\S+)$/i;
 
 export interface HttpHandlerOptions {
   /** Builds the per-request Salla client. Tests inject a fake; production uses the real client. */
   readonly createClient?: (accessToken: string) => SallaClient;
   /**
    * Allowed `Host` header hostnames (DNS-rebinding protection). `undefined` disables the check.
-   * `startHttpServer` sets loopback names automatically when bound to a loopback address.
+   * `startHttpServer` sets loopback names automatically when bound to a loopback address and
+   * refuses a non-loopback bind without an explicit list.
+   *
+   * The same list gates the `Origin` header (MCP 2025-06-18 transports: servers MUST validate
+   * Origin): a request that sends `Origin` is accepted only if its hostname is in this list.
+   * With no list, every request that sends `Origin` is rejected.
    */
   readonly allowedHostnames?: readonly string[];
   /** Where diagnostics go (always redacted). Defaults to stderr. */
@@ -55,6 +61,17 @@ function hostnameOf(hostHeader: string | undefined): string | undefined {
   if (!hostHeader) return undefined;
   try {
     return new URL(`http://${hostHeader}`).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Hostname of an `Origin` header (`scheme://host[:port]`), or `undefined` for `null` or garbage. */
+function originHostname(origin: string | string[]): string | undefined {
+  if (typeof origin !== 'string') return undefined;
+  try {
+    const url = new URL(origin);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.hostname.toLowerCase() : undefined;
   } catch {
     return undefined;
   }
@@ -99,6 +116,15 @@ export function createHttpHandler(options: HttpHandlerOptions = {}): HttpHandler
       const hostname = hostnameOf(req.headers.host);
       if (!hostname || !allowed.includes(hostname)) {
         sendJsonRpcError(res, 403, -32000, 'Forbidden host.');
+        return;
+      }
+    }
+
+    const origin = req.headers.origin;
+    if (origin !== undefined) {
+      const originHost = originHostname(origin);
+      if (!originHost || !allowed?.includes(originHost)) {
+        sendJsonRpcError(res, 403, -32000, 'Forbidden origin.');
         return;
       }
     }
@@ -175,6 +201,12 @@ export function createHttpHandler(options: HttpHandlerOptions = {}): HttpHandler
 export interface StartHttpServerOptions extends HttpHandlerOptions {
   readonly host?: string;
   readonly port?: number;
+  /**
+   * Required to bind a non-loopback address. HTTP mode forwards bearer tokens in plain HTTP, so a
+   * remote bind is only for deployments behind TLS (mesh mTLS or a proxy); `allowedHostnames`
+   * must then be set too.
+   */
+  readonly allowRemote?: boolean;
 }
 
 export const DEFAULT_HOST = '127.0.0.1';
@@ -216,8 +248,17 @@ export function withErrorBoundary(
 export async function startHttpServer(options: StartHttpServerOptions = {}): Promise<Server> {
   const host = options.host ?? DEFAULT_HOST;
   const port = options.port ?? DEFAULT_PORT;
-  const allowedHostnames =
-    options.allowedHostnames ?? (isLoopbackHost(host) ? ['127.0.0.1', 'localhost', '[::1]'] : undefined);
+  if (!isLoopbackHost(host)) {
+    if (!options.allowRemote) {
+      throw new Error(`Refusing to bind non-loopback address ${host} without allowRemote (--allow-remote).`);
+    }
+    if (!options.allowedHostnames?.length) {
+      throw new Error('A non-loopback bind requires allowedHostnames (--allowed-host).');
+    }
+  }
+  const allowedHostnames = options.allowedHostnames?.length
+    ? options.allowedHostnames
+    : ['127.0.0.1', 'localhost', '[::1]'];
   const handler = createHttpHandler({ ...options, allowedHostnames });
 
   const server = createServer(withErrorBoundary(handler, options.log));

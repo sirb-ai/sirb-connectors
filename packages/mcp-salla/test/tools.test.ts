@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { afterEach, describe, expect, it } from 'vitest';
+import { projectCustomers, projectOrders } from '../src/project.js';
 import { createSallaClient, type SallaClient } from '../src/salla-client.js';
 import { createSallaServer } from '../src/server.js';
 import { buildPath, MAX_PER_PAGE, TOOLS, type ToolName } from '../src/tools.js';
@@ -119,7 +120,7 @@ describe('MCP server over InMemoryTransport', () => {
     });
 
     expect(result.isError).toBeFalsy();
-    expect(result.structuredContent).toEqual({ data: fixture.data, pagination: fixture.pagination });
+    expect(result.structuredContent).toEqual({ data: projectOrders(fixture.data), pagination: fixture.pagination });
     expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual(result.structuredContent);
 
     expect(calls).toHaveLength(1);
@@ -147,9 +148,9 @@ describe('MCP server over InMemoryTransport', () => {
     expect(result.isError).toBeFalsy();
     expect(calls[0]!.url.pathname).toBe(path);
     expect(Object.fromEntries(calls[0]!.url.searchParams)).toEqual(query);
-    expect((result.structuredContent as { data: unknown }).data).toEqual(
-      (loadFixture(fixture) as { data: unknown }).data,
-    );
+    const raw = (loadFixture(fixture) as { data: unknown }).data;
+    const shaped = name.includes('order') ? projectOrders(raw) : name.includes('customer') ? projectCustomers(raw) : raw;
+    expect((result.structuredContent as { data: unknown }).data).toEqual(shaped);
   });
 
   it.each([

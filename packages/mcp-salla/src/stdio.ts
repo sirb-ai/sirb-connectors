@@ -21,7 +21,7 @@ export function readStdioToken(env: NodeJS.ProcessEnv = process.env): string {
   if (!isValidBearerToken(token)) {
     // Never echo the value: it may be a real (if mangled) secret.
     throw new Error(
-      `${TOKEN_ENV_VAR} is not a valid OAuth bearer token (expected RFC 6750 token characters, ` +
+      `${TOKEN_ENV_VAR} is not a valid OAuth access token (expected RFC 6750 token characters, ` +
         `at most ${MAX_TOKEN_LENGTH} characters). Check the value in your MCP client's server "env" block.`,
     );
   }

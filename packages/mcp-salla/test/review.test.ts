@@ -12,6 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { serverUrl, startHttpServer } from '../src/http.js';
 import { createSallaClient } from '../src/salla-client.js';
 import { createSallaServer } from '../src/server.js';
+import { projectCustomers, projectOrders } from '../src/project.js';
 import { TOOLS } from '../src/tools.js';
 import { fakeFetch, loadFixture, TEST_TOKEN, type FakeResponse } from './helpers.js';
 
@@ -59,9 +60,15 @@ describe('per-tool happy path: exact URL, bearer, GET only', () => {
     const { call, calls } = await setup({ body });
     const result = await call(name, args);
 
+    // Orders and customers are projected (no contact fields by default); products pass through.
+    const shaped = name.includes('order')
+      ? projectOrders(body.data)
+      : name.includes('customer')
+        ? projectCustomers(body.data)
+        : body.data;
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent).toEqual(
-      body.pagination === undefined ? { data: body.data } : { data: body.data, pagination: body.pagination },
+      body.pagination === undefined ? { data: shaped } : { data: shaped, pagination: body.pagination },
     );
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url.href).toBe(href);
@@ -244,18 +251,22 @@ describe('error mapping and token non-leakage', () => {
   });
 });
 
-describe('untrusted text is returned verbatim as data', () => {
-  it('round-trips hostile strings byte for byte, only inside the JSON payload', async () => {
-    const body = loadFixture('orders-injection') as { data: unknown };
+describe('untrusted text is returned as data', () => {
+  it('keeps projected hostile strings verbatim, only inside the JSON payload', async () => {
+    type Order = { customer: { first_name: string }; items: Array<{ name: string }>; notes?: string };
+    const body = loadFixture('orders-injection') as { data: Order[] };
     const { call, calls } = await setup({ body });
-    const result = await call('salla_list_orders');
+    const result = await call('salla_list_orders', { include_contact: true });
 
     expect(result.isError).toBeFalsy();
-    expect(result.structuredContent).toMatchObject({ data: body.data });
     expect(result.content).toHaveLength(1);
     expect(JSON.parse(textOf(result))).toEqual(result.structuredContent);
-    const note = (body.data as Array<{ notes: string }>)[0]!.notes;
-    expect((result.structuredContent as { data: Array<{ notes: string }> }).data[0]!.notes).toBe(note);
+    const [order] = (result.structuredContent as { data: Order[] }).data;
+    expect(order!.customer.first_name).toBe(body.data[0]!.customer.first_name);
+    expect(order!.items[0]!.name).toBe(body.data[0]!.items[0]!.name);
+    // Free-text notes and gift messages are not part of the order projection at all.
+    expect(order).not.toHaveProperty('notes');
+    expect(order).not.toHaveProperty('gift_message');
     // Injected text did not trigger any extra upstream call.
     expect(calls).toHaveLength(1);
   });
@@ -350,7 +361,8 @@ describe('HTTP transport (127.0.0.1, ephemeral port)', () => {
       const res = await fetch(url, {
         method: 'POST',
         headers: { ...HEADERS, Authorization: `Bearer ${token}` },
-        body: rpc('tools/call', { name: 'salla_get_order', arguments: { order_id: 1 } }),
+        // Products are not projected, so the fake's echoed_auth field survives to the result.
+        body: rpc('tools/call', { name: 'salla_get_product', arguments: { product_id: 1 } }),
       });
       expect(res.status).toBe(200);
       return (await res.json()) as { result: CallToolResult };

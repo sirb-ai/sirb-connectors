@@ -5,10 +5,14 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { describeSallaError, type Query, type SallaClient } from './salla-client.js';
+import { capPayload, projectCustomers, projectOrders, stripControlChars } from './project.js';
+import { describeSallaError, type Query, type SallaClient, type SallaError } from './salla-client.js';
 
 export type ToolRisk = 'read' | 'write' | 'destructive';
-/** `pii`: results include personal data (names, emails, phones, addresses). `business`: catalogue data. */
+/**
+ * `pii`: results can include personal data (contact fields only with `include_contact: true`; see
+ * project.ts). `business`: catalogue data.
+ */
 export type DataClass = 'pii' | 'business';
 
 export interface ToolDescriptor {
@@ -81,6 +85,14 @@ const isoDate = z
     return !Number.isNaN(date.getTime()) && date.toISOString().startsWith(value);
   }, 'Not a real calendar date.');
 
+const includeContact = z
+  .boolean()
+  .optional()
+  .describe(
+    'If true, also return customer name, email and mobile. Default false: only IDs and non-contact fields. ' +
+      'Request contact details only when the task needs them.',
+  );
+
 export const inputSchemas = {
   salla_list_orders: {
     page,
@@ -89,10 +101,18 @@ export const inputSchemas = {
     status: slug('Order status filter as accepted by Salla.'),
     from_date: isoDate.optional().describe('Only orders created on or after this date (YYYY-MM-DD).'),
     to_date: isoDate.optional().describe('Only orders created on or before this date (YYYY-MM-DD).'),
+    include_contact: includeContact,
   },
   salla_get_order: {
     order_id: id('order'),
-    light: z.boolean().optional().describe('If true, omit shipments, items, pickup branch and customer groups.'),
+    light: z
+      .boolean()
+      .optional()
+      .describe(
+        'If true, send format=light (Salla omits shipments, items, pickup branch and customer groups). ' +
+          'Salla documents light as its default order format from 2026-09-01, so items may be missing either way.',
+      ),
+    include_contact: includeContact,
   },
   salla_list_products: {
     page,
@@ -100,18 +120,25 @@ export const inputSchemas = {
     keyword: keyword.describe('Free-text search over product name / SKU.'),
     status: slug('Product status filter as accepted by Salla.'),
     category: slug('Category filter as accepted by Salla.'),
-    light: z.boolean().optional().describe('If true, request the lighter product format.'),
+    light: z
+      .boolean()
+      .optional()
+      .describe('Lighter product format (format=light). Defaults to true; pass false for full product objects.'),
   },
   salla_get_product: {
     product_id: id('product'),
   },
   salla_list_customers: {
     page,
-    per_page: perPage,
+    per_page: perPage.describe(`Items per page, 1..${MAX_PER_PAGE}. Salla's customer docs do not list per_page; it may be ignored.`),
     keyword: keyword.describe('Matches customer mobile, email or name.'),
+    date_from: isoDate.optional().describe('Only customers created on or after this date (YYYY-MM-DD).'),
+    date_to: isoDate.optional().describe('Only customers created on or before this date (YYYY-MM-DD).'),
+    include_contact: includeContact,
   },
   salla_get_customer: {
     customer_id: id('customer'),
+    include_contact: includeContact,
   },
 } as const;
 
@@ -150,23 +177,47 @@ function errorResult(message: string): CallToolResult {
   return { isError: true, content: [{ type: 'text', text: message }] };
 }
 
+/** Salla query keys that differ from the tool argument the model used. */
+const QUERY_TO_ARG: Readonly<Record<string, string>> = { format: 'light' };
+
+/** Keeps only 422 field names that map to one of this tool's own arguments. */
+function toolValidationError(error: SallaError, name: ToolName): SallaError {
+  if (error.kind !== 'validation') return error;
+  const args = new Set(Object.keys(inputSchemas[name]));
+  const fields = (error.fields ?? []).map((f) => QUERY_TO_ARG[f] ?? f).filter((f) => args.has(f));
+  return { ...error, fields };
+}
+
+/** Projects Salla `data` down to what the model may see. Identity for business data. */
+type Shape = (data: unknown) => unknown;
+const asIs: Shape = (data) => data;
+
 async function callSalla(
   client: SallaClient,
   name: ToolName,
   pathParams: Readonly<Record<string, number>>,
   query: Query,
+  shape: Shape = asIs,
 ): Promise<CallToolResult> {
   const tool = TOOLS[name];
   try {
     const result = await client.get(buildPath(tool.path, pathParams), query);
     if (!result.ok) {
-      return errorResult(describeSallaError(result.error, tool.scope));
+      return errorResult(describeSallaError(toolValidationError(result.error, name), tool.scope));
     }
+    const data = stripControlChars(shape(result.data));
     const payload: Record<string, unknown> =
-      result.pagination === undefined ? { data: result.data } : { data: result.data, pagination: result.pagination };
+      result.pagination === undefined ? { data } : { data, pagination: stripControlChars(result.pagination) };
+    const capped = capPayload(payload);
+    if (!capped.ok) {
+      return errorResult(
+        `The ${name} result is too large to return. Use a smaller per_page, narrower filters or light format.`,
+      );
+    }
     return {
-      content: [{ type: 'text', text: JSON.stringify(payload) }],
-      structuredContent: payload,
+      // MCP 2025-06-18: tools returning structuredContent SHOULD also return it as serialized text.
+      content: [{ type: 'text', text: capped.json }],
+      structuredContent: capped.payload,
     };
   } catch {
     // Never echo internal error text; it could contain request details.
@@ -174,9 +225,9 @@ async function callSalla(
   }
 }
 
-function dateRangeError(from?: string, to?: string): CallToolResult | undefined {
+function dateRangeError(from?: string, to?: string, names = ['from_date', 'to_date']): CallToolResult | undefined {
   return from !== undefined && to !== undefined && from > to
-    ? errorResult('from_date must be on or before to_date.')
+    ? errorResult(`${names[0]} must be on or before ${names[1]}.`)
     : undefined;
 }
 
@@ -211,13 +262,16 @@ export function registerSallaTools(server: McpServer, client: SallaClient): void
         status: a.status,
         from_date: a.from_date,
         to_date: a.to_date,
-      }),
+      }, (data) => projectOrders(data, a.include_contact)),
   );
 
   server.registerTool(
     'salla_get_order',
     { ...toolConfig('salla_get_order'), inputSchema: inputSchemas.salla_get_order },
-    (a) => callSalla(client, 'salla_get_order', { order_id: a.order_id }, { format: a.light ? 'light' : undefined }),
+    (a) =>
+      callSalla(client, 'salla_get_order', { order_id: a.order_id }, { format: a.light ? 'light' : undefined }, (data) =>
+        projectOrders(data, a.include_contact),
+      ),
   );
 
   server.registerTool(
@@ -230,7 +284,7 @@ export function registerSallaTools(server: McpServer, client: SallaClient): void
         keyword: a.keyword,
         status: a.status,
         category: a.category,
-        format: a.light ? 'light' : undefined,
+        format: a.light === false ? undefined : 'light',
       }),
   );
 
@@ -243,12 +297,23 @@ export function registerSallaTools(server: McpServer, client: SallaClient): void
   server.registerTool(
     'salla_list_customers',
     { ...toolConfig('salla_list_customers'), inputSchema: inputSchemas.salla_list_customers },
-    (a) => callSalla(client, 'salla_list_customers', {}, { page: a.page, per_page: a.per_page, keyword: a.keyword }),
+    async (a) =>
+      dateRangeError(a.date_from, a.date_to, ['date_from', 'date_to']) ??
+      callSalla(
+        client,
+        'salla_list_customers',
+        {},
+        { page: a.page, per_page: a.per_page, keyword: a.keyword, date_from: a.date_from, date_to: a.date_to },
+        (data) => projectCustomers(data, a.include_contact),
+      ),
   );
 
   server.registerTool(
     'salla_get_customer',
     { ...toolConfig('salla_get_customer'), inputSchema: inputSchemas.salla_get_customer },
-    (a) => callSalla(client, 'salla_get_customer', { customer_id: a.customer_id }, {}),
+    (a) =>
+      callSalla(client, 'salla_get_customer', { customer_id: a.customer_id }, {}, (data) =>
+        projectCustomers(data, a.include_contact),
+      ),
   );
 }

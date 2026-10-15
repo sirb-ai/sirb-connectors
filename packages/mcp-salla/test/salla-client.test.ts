@@ -205,3 +205,82 @@ describe('base URL handling', () => {
     expect(performance.now() - started).toBeLessThan(250);
   });
 });
+
+describe('response size limit', () => {
+  const jsonStream = (chunks: number, chunkBytes: number) =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"success":true,"data":"'));
+        for (let i = 0; i < chunks; i++) controller.enqueue(new Uint8Array(chunkBytes).fill(0x78));
+        controller.enqueue(new TextEncoder().encode('"}'));
+        controller.close();
+      },
+    });
+
+  it('refuses a body whose Content-Length is over the limit without reading it', async () => {
+    // A body that never ends: reading it at all would hang the test.
+    let cancelled = false;
+    const body = new ReadableStream({ cancel: () => void (cancelled = true) });
+    const fetch = (async () =>
+      new Response(body, { status: 200, headers: { 'Content-Length': '2000' } })) as typeof globalThis.fetch;
+    const result = await createSallaClient({ accessToken: TEST_TOKEN, fetch, maxResponseBytes: 1000 }).get('/orders');
+    expect(result).toEqual({ ok: false, error: { kind: 'too_large', status: 200 } });
+    expect(cancelled).toBe(true);
+  });
+
+  it('stops reading a streamed body once it passes the limit', async () => {
+    const fetch = (async () => new Response(jsonStream(100, 100), { status: 200 })) as typeof globalThis.fetch;
+    const result = await createSallaClient({ accessToken: TEST_TOKEN, fetch, maxResponseBytes: 1000 }).get('/orders');
+    expect(result).toEqual({ ok: false, error: { kind: 'too_large', status: 200 } });
+    expect(describeSallaError({ kind: 'too_large' }, 'orders.read')).toMatch(/too large/);
+  });
+
+  it('reads a body under the limit, including multi-byte text split across chunks', async () => {
+    const bytes = new TextEncoder().encode(JSON.stringify({ success: true, data: 'قهوة' }));
+    const fetch = (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(c) {
+            for (const b of bytes) c.enqueue(new Uint8Array([b]));
+            c.close();
+          },
+        }),
+      )) as typeof globalThis.fetch;
+    const result = await createSallaClient({ accessToken: TEST_TOKEN, fetch }).get('/orders');
+    expect(result).toEqual({ ok: true, data: 'قهوة' });
+  });
+
+  it('falls back to text() for a fetch that exposes no stream', async () => {
+    const fetch = (async () => ({
+      status: 200,
+      headers: new Headers(),
+      body: null,
+      text: async () => JSON.stringify({ success: true, data: [1] }),
+    })) as unknown as typeof globalThis.fetch;
+    const result = await createSallaClient({ accessToken: TEST_TOKEN, fetch }).get('/orders');
+    expect(result).toEqual({ ok: true, data: [1] });
+  });
+});
+
+describe('422 validation errors', () => {
+  it('keeps only sanitised field names, never messages', async () => {
+    const fields = Object.fromEntries(
+      ['status', 'Bad Name', 'per_page', ...Array.from({ length: 20 }, (_, i) => `f${i}`)].map((k) => [k, ['msg']]),
+    );
+    const { client: c } = client({ status: 422, body: { success: false, error: { message: 'leak', fields } } });
+    const result = await c.get('/orders');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('validation');
+    expect(result.error.fields).toHaveLength(10);
+    expect(result.error.fields!.slice(0, 2)).toEqual(['status', 'per_page']);
+    expect(JSON.stringify(result)).not.toContain('leak');
+  });
+
+  it('tolerates a 422 body that is not JSON or has no fields', async () => {
+    for (const r of [{ status: 422, rawBody: 'nope' }, { status: 422, body: { error: { fields: ['a'] } } }]) {
+      const result = await client(r).client.get('/orders');
+      expect(result).toEqual({ ok: false, error: { kind: 'validation', status: 422, fields: [] } });
+    }
+  });
+});

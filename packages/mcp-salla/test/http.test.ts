@@ -161,3 +161,60 @@ describe('helpers', () => {
     expect(isLoopbackHost('0.0.0.0')).toBe(false);
   });
 });
+
+describe('HTTP hardening', () => {
+  const raw = (target: string, headers: Record<string, string>) =>
+    new Promise<number>((resolve, reject) => {
+      const u = new URL(target);
+      void import('node:http').then(({ request }) => {
+        const req = request({ host: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on('error', reject);
+        req.end(listTools);
+      });
+    });
+  const auth = { Authorization: `Bearer ${TEST_TOKEN}` };
+
+  it('accepts the bearer scheme case-insensitively (RFC 7235)', () => {
+    expect(parseBearer('bearer abc')).toBe('abc');
+    expect(parseBearer('BEARER abc')).toBe('abc');
+  });
+
+  it('rejects a foreign or null Origin and accepts a loopback one', async () => {
+    expect(await raw(url, { ...MCP_HEADERS, ...auth, Origin: 'https://evil.example' })).toBe(403);
+    expect(await raw(url, { ...MCP_HEADERS, ...auth, Origin: 'null' })).toBe(403);
+    expect(await raw(url, { ...MCP_HEADERS, ...auth, Origin: 'file://x' })).toBe(403);
+    expect(await raw(url, { ...MCP_HEADERS, ...auth, Origin: 'http://localhost:5173' })).toBe(200);
+    // No Origin (non-browser MCP clients) is fine.
+    expect(await raw(url, { ...MCP_HEADERS, ...auth })).toBe(200);
+  });
+
+  it('refuses a non-loopback bind without allowRemote and allowedHostnames', async () => {
+    await expect(startHttpServer({ host: '0.0.0.0', port: 0 })).rejects.toThrow(/allowRemote/);
+    await expect(startHttpServer({ host: '0.0.0.0', port: 0, allowRemote: true })).rejects.toThrow(/allowedHostnames/);
+  });
+
+  it('a remote bind enforces its explicit Host and Origin allowlist', async () => {
+    const remote = await startHttpServer({
+      host: '0.0.0.0',
+      port: 0,
+      allowRemote: true,
+      allowedHostnames: ['mcp.internal'],
+      createClient,
+      log: () => undefined,
+    });
+    try {
+      const port = (remote.address() as { port: number }).port;
+      const target = `http://127.0.0.1:${port}/mcp`;
+      expect(await raw(target, { ...MCP_HEADERS, ...auth, Host: 'evil.example' })).toBe(403);
+      expect(await raw(target, { ...MCP_HEADERS, ...auth, Host: `127.0.0.1:${port}` })).toBe(403);
+      expect(await raw(target, { ...MCP_HEADERS, ...auth, Host: 'mcp.internal' })).toBe(200);
+      expect(await raw(target, { ...MCP_HEADERS, ...auth, Host: 'mcp.internal', Origin: 'https://evil.example' })).toBe(403);
+      expect(await raw(target, { ...MCP_HEADERS, ...auth, Host: 'mcp.internal', Origin: 'https://mcp.internal' })).toBe(200);
+    } finally {
+      await new Promise((resolve) => remote.close(resolve));
+    }
+  });
+});

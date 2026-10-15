@@ -9,6 +9,8 @@ import { z } from 'zod';
 
 export const SALLA_BASE_URL = 'https://api.salla.dev/admin/v2';
 export const DEFAULT_TIMEOUT_MS = 15_000;
+/** Largest Salla response body the client will read. Anything bigger is refused, not buffered. */
+export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 export type QueryValue = string | number | boolean | undefined;
 export type Query = Readonly<Record<string, QueryValue>>;
@@ -17,6 +19,8 @@ export type SallaErrorKind =
   | 'unauthorized'
   | 'not_found'
   | 'rate_limited'
+  | 'validation'
+  | 'too_large'
   | 'unsuccessful'
   | 'http'
   | 'timeout'
@@ -31,6 +35,8 @@ export interface SallaError {
   readonly retryAfter?: string;
   /** Value of `X-RateLimit-Reset`, sanitised to digits. */
   readonly rateLimitReset?: string;
+  /** For 422: names of the rejected fields (`error.fields` keys), sanitised. Never their messages. */
+  readonly fields?: readonly string[];
 }
 
 export type SallaResult =
@@ -48,6 +54,8 @@ export interface SallaClientOptions {
   /** For tests only. Must be https, or http on a loopback host. Not exposed via CLI or env. */
   readonly baseUrl?: string;
   readonly timeoutMs?: number;
+  /** Defaults to `MAX_RESPONSE_BYTES`. */
+  readonly maxResponseBytes?: number;
 }
 
 /**
@@ -117,6 +125,51 @@ function sanitiseRetryAfter(value: string | null): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toUTCString();
 }
 
+class ResponseTooLargeError extends Error {}
+
+/** Reads the body as text, refusing more than `maxBytes` (checked on Content-Length and while streaming). */
+async function readBodyLimited(response: Response, maxBytes: number): Promise<string> {
+  const declared = Number(response.headers.get('content-length') ?? '');
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new ResponseTooLargeError();
+  }
+  if (!response.body) {
+    // Non-standard fetch implementations may not expose a stream.
+    return typeof response.text === 'function' ? response.text() : JSON.stringify(await response.json());
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let size = 0;
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new ResponseTooLargeError();
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
+const FIELD_NAME = /^[a-z][a-z0-9_]{0,39}$/;
+const MAX_FIELDS = 10;
+
+/** Extracts the keys of a 422 body's `error.fields`, keeping only short snake_case names. */
+async function validationFields(response: Response): Promise<string[]> {
+  try {
+    const body = JSON.parse(await readBodyLimited(response, 64 * 1024)) as { error?: { fields?: unknown } };
+    const fields = body?.error?.fields;
+    if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) return [];
+    return Object.keys(fields).filter((name) => FIELD_NAME.test(name)).slice(0, MAX_FIELDS);
+  } catch {
+    return [];
+  }
+}
+
 function errorFromResponse(response: Response): SallaError {
   const status = response.status;
   switch (status) {
@@ -148,6 +201,7 @@ export function createSallaClient(options: SallaClientOptions): SallaClient {
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const baseUrl = options.baseUrl === undefined ? SALLA_BASE_URL : assertSafeBaseUrl(options.baseUrl).href;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxResponseBytes = options.maxResponseBytes ?? MAX_RESPONSE_BYTES;
 
   return {
     async get(path, query) {
@@ -173,6 +227,10 @@ export function createSallaClient(options: SallaClientOptions): SallaClient {
       // Only 2xx is success. Checked explicitly rather than via `response.ok` because `fetch` is
       // injectable; any 1xx/3xx (redirects are refused anyway) or 4xx/5xx is an error.
       if (response.status < 200 || response.status > 299) {
+        if (response.status === 422) {
+          // Only the field *names* are kept; Salla's messages are never echoed.
+          return { ok: false, error: { kind: 'validation', status: 422, fields: await validationFields(response) } };
+        }
         // Drain without reading the body into anything we return.
         await response.body?.cancel().catch(() => undefined);
         return { ok: false, error: errorFromResponse(response) };
@@ -180,9 +238,10 @@ export function createSallaClient(options: SallaClientOptions): SallaClient {
 
       let json: unknown;
       try {
-        json = await response.json();
-      } catch {
-        return { ok: false, error: { kind: 'invalid_response', status: response.status } };
+        json = JSON.parse(await readBodyLimited(response, maxResponseBytes));
+      } catch (err) {
+        const kind = err instanceof ResponseTooLargeError ? 'too_large' : 'invalid_response';
+        return { ok: false, error: { kind, status: response.status } };
       }
 
       const parsed = envelopeSchema.safeParse(json);
@@ -219,6 +278,12 @@ export function describeSallaError(error: SallaError, scope: string): string {
       ].filter(Boolean);
       return `Salla rate limit reached (HTTP 429).${hints.length ? ` ${hints.join('; ')}.` : ''} Wait before retrying.`;
     }
+    case 'validation':
+      return error.fields?.length
+        ? `Salla rejected the request (HTTP 422). Invalid fields: ${error.fields.join(', ')}.`
+        : 'Salla rejected the request as invalid (HTTP 422).';
+    case 'too_large':
+      return 'The Salla response was too large to process. Use a smaller per_page, narrower filters or light format.';
     case 'unsuccessful':
       return 'Salla reported the request as unsuccessful.';
     case 'timeout':

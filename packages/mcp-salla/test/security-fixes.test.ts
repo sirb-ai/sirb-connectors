@@ -182,7 +182,8 @@ describe('F11: stdio token validation', () => {
     } catch (err) {
       message = (err as Error).message;
     }
-    expect(message).toMatch(/not a valid OAuth bearer token/);
+    expect(message).toMatch(/not a valid OAuth access token/);
+    expect(message).not.toContain('[REDACTED]');
     expect(message).not.toContain(value.trim());
     expect(message).not.toContain('secret');
   });
